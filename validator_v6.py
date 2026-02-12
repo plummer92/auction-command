@@ -141,7 +141,15 @@ def fetch_ebay_results(driver, search_query):
         logging.info(f"   Page title: {driver.title}")
         logging.info(f"   URL: {driver.current_url}")
 
-    items = driver.find_elements(By.CSS_SELECTOR, "li.s-item")
+    driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+    time.sleep(1)
+
+
+    items = driver.find_elements(
+        By.XPATH,
+        "//ul[contains(@class,'srp-results')]//li[contains(@class,'s-item')]"
+    )
+
 
     if DEBUG_MODE:
         logging.info(f"   Found {len(items)} raw eBay items")
