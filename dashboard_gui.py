@@ -179,7 +179,15 @@ with tab1:
 
                 with c2:
                     st.caption("Bid / eBay Avg")
-                    st.write(f"${row['current_bid']:.0f} / ${row['market_value']:.0f}")
+                    current_bid = row['current_bid']
+                    market_value = row['market_value']
+
+                    bid_display = f"${current_bid:,.0f}" if current_bid else "N/A"
+                    value_display = f"${market_value:,.0f}" if market_value else "N/A"
+
+                    st.write(f"{bid_display} / {value_display}")
+
+
 
                 with c3:
                     if row['minutes_left'] < 60:
