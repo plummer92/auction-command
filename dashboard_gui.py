@@ -105,9 +105,10 @@ st.divider()
 
 # ===================== TABS ================================
 
-tab1, tab2, tab3, tab4 = st.tabs(
-    ["🎯 Active Hunt", "📦 Inventory", "🗄️ Graveyard", "🏛️ Archives"]
+tab1, tab2, tab3, tab4, tab5 = st.tabs(
+    ["🎯 Active Hunt", "📦 Inventory", "🗄️ Graveyard", "🏛️ Archives", "📈 Metals"]
 )
+
 
 # ============================================================
 # TAB 1 — ACTIVE HUNT
@@ -134,7 +135,8 @@ with tab1:
             search = st.text_input("Search")
 
         with col2:
-            min_profit = st.number_input("Min Profit", value=20)
+            min_profit = st.number_input("Min Profit", value=0)
+
 
         with col3:
             sort_by = st.selectbox(
@@ -145,7 +147,11 @@ with tab1:
         if search:
             df = df[df['title'].str.contains(search, case=False, na=False)]
 
-        df = df[df['potential_profit'] >= min_profit]
+        df['potential_profit'] = df['potential_profit'].fillna(-9999)
+
+        if min_profit > 0:
+            df = df[df['potential_profit'] >= min_profit]
+
 
         df['minutes_left'] = df['time_remaining'].apply(parse_time_to_minutes)
 
@@ -230,3 +236,21 @@ with tab4:
         LIMIT 50
     """)
     st.dataframe(df_sold)
+
+# ============================================================
+# TAB 5 — METALS
+# ============================================================
+
+with tab5:
+
+    st.header("Live Metals Market")
+
+    gold, silver = get_live_metals()
+
+    col1, col2 = st.columns(2)
+
+    col1.metric("Gold (GC=F)", f"${gold:,.2f}")
+    col2.metric("Silver (SI=F)", f"${silver:,.2f}")
+
+    st.caption(f"Last Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
