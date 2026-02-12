@@ -142,9 +142,9 @@ def fetch_ebay_results(driver, search_query):
         logging.info(f"   URL: {driver.current_url}")
 
     if DEBUG_MODE:
-    with open("debug_page.html", "w", encoding="utf-8") as f:
-        f.write(driver.page_source)
-    logging.info("   🔍 Saved debug_page.html")
+        with open("debug_page.html", "w", encoding="utf-8") as f:
+            f.write(driver.page_source)
+        logging.info("   🔍 Saved debug_page.html")
 
 
     driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
