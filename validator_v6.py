@@ -153,8 +153,9 @@ def fetch_ebay_results(driver, search_query):
 
     items = driver.find_elements(
         By.XPATH,
-        "//ul[contains(@class,'srp-results')]//li[contains(@class,'s-item')]"
+        "//*[contains(@class,'s-item')]"
     )
+
 
 
     if DEBUG_MODE:
