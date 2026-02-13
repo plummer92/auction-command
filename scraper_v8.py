@@ -276,8 +276,10 @@ def run_scraper():
     print("Scrape complete.")
 
 
+import lifecycle_manager
+
 if __name__ == "__main__":
-    try:
-        run_scraper()
+    run_scraper()
+    lifecycle_manager.run_lifecycle()
     except KeyboardInterrupt:
         print("Scraper manually stopped.")
