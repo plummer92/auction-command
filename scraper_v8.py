@@ -9,9 +9,8 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
-# --- CONFIGURATION ---
 DB_NAME = "hibid_lots.db"
-ZIP_CODE = ["62629","46173"]
+ZIP_CODES = ["62629", "46173"]
 RADIUS = 50
 MAX_PAGES = 10
 
@@ -40,11 +39,10 @@ def parse_time_to_minutes(time_str):
 # -------------------- DATABASE SETUP -------------------- #
 
 def setup_db():
-    db_path = os.path.abspath(DB_NAME)
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
 
-    cursor.execute('''
+    cursor.execute("""
         CREATE TABLE IF NOT EXISTS lots (
             lot_id TEXT PRIMARY KEY,
             title TEXT,
@@ -54,191 +52,151 @@ def setup_db():
             minutes_left INTEGER,
             url TEXT,
             image_url TEXT,
-            market_value REAL,
-            ref_image TEXT,
             status TEXT DEFAULT 'pending',
             last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            buyers_premium REAL DEFAULT 0.15,
-            shipping_available INTEGER DEFAULT 1,
             final_price REAL,
-            location TEXT
+            ended_checked INTEGER DEFAULT 0,
+            velocity REAL,
+            edge_score REAL,
+            predicted_value REAL,
+            classifier_confidence REAL
         )
-    ''')
+    """)
 
     conn.commit()
     conn.close()
-    return db_path
 
 
-# -------------------- DRIVER SETUP -------------------- #
+# -------------------- DRIVER -------------------- #
 
 def get_driver():
-    chrome_options = Options()
-    chrome_options.binary_location = CHROMIUM_PATH
-
-    chrome_options.add_argument("--headless=new")
-    chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument("--disable-gpu")
-    chrome_options.add_argument("--window-size=1920,1080")
+    options = Options()
+    options.binary_location = CHROMIUM_PATH
+    options.add_argument("--headless=new")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--window-size=1920,1080")
 
     service = Service(CHROMEDRIVER_PATH)
-    driver = webdriver.Chrome(service=service, options=chrome_options)
+    driver = webdriver.Chrome(service=service, options=options)
     driver.set_page_load_timeout(30)
-
     return driver
 
 
-# -------------------- SCRAPER -------------------- #
+# -------------------- FINAL PRICE SCRAPER -------------------- #
+
 def scrape_final_price(driver, url):
     try:
         driver.get(url)
         time.sleep(2)
-        page_text = driver.page_source
-
-        match = re.search(r'Price Realized:\s*([\d\.]+)', page_text)
+        text = driver.page_source
+        match = re.search(r'Price Realized:\s*\$?([\d,\.]+)', text)
         if match:
-            return float(match.group(1))
+            return float(match.group(1).replace(",", ""))
     except:
         pass
     return None
 
 
+# -------------------- MAIN SCRAPER -------------------- #
 
 def run_scraper():
-    print("=== AUCTION SCRAPER (CLOUD MODE) ===")
+    print("=== AUCTION SCRAPER ===")
 
-    db_path = setup_db()
+    setup_db()
     driver = get_driver()
 
-    base_url = f"https://hibid.com/lots?zip={ZIP_CODE}&miles={RADIUS}&lot_type=ONLINE"
-    print(f"Navigating: {base_url}")
-    driver.get(base_url)
+    for zip_code in ZIP_CODES:
 
-    total_saved = 0
-    current_page = 1
+        base_url = f"https://hibid.com/lots?zip={zip_code}&miles={RADIUS}&lot_type=ONLINE"
+        print(f"\nScanning ZIP: {zip_code}")
+        driver.get(base_url)
 
-    while current_page <= MAX_PAGES:
-        print(f"\n[PAGE {current_page}]")
+        for page in range(1, MAX_PAGES + 1):
 
-        time.sleep(3)
-        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-        time.sleep(2)
+            print(f"[PAGE {page}]")
+            time.sleep(3)
+            driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            time.sleep(2)
 
-        cards = driver.find_elements(By.TAG_NAME, "app-lot-tile")
-        print(f"Found {len(cards)} items")
+            cards = driver.find_elements(By.TAG_NAME, "app-lot-tile")
+            print(f"Found {len(cards)} items")
 
-        conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
+            conn = sqlite3.connect(DB_NAME)
+            cursor = conn.cursor()
 
-        for card in cards:
-            try:
-                link_el = None
-                links = card.find_elements(By.TAG_NAME, "a")
-                for l in links:
-                    href = l.get_attribute("href")
-                    if href and "/lot/" in href:
-                        link_el = l
-                        break
-
-                if not link_el:
-                    continue
-
-                title = link_el.text.strip()
-                link = link_el.get_attribute("href")
-                lot_id = link.split('/')[-2]
-
-                # --- PRICE ---
-                price = 0.0
+            for card in cards:
                 try:
-                    price_el = card.find_element(By.CLASS_NAME, "lot-high-bid")
-                    price_text = price_el.text.replace("High Bid:", "").replace("USD", "").strip()
-                    price = float(price_text.replace(",", ""))
-                except:
+                    link_el = card.find_element(By.TAG_NAME, "a")
+                    link = link_el.get_attribute("href")
+                    lot_id = link.split('/')[-2]
+                    title = link_el.text.strip()
+
+                    # PRICE
+                    price = 0.0
                     match = re.search(r'\$([\d,]+\.?\d*)', card.text)
                     if match:
-                        price = float(match.group(1).replace(',', ''))
+                        price = float(match.group(1).replace(",", ""))
 
-                # --- BID COUNT ---
-                bid_count = 0
-                try:
-                    bid_el = card.find_element(By.CLASS_NAME, "lot-bid-history")
-                    bid_count = int(re.sub(r'\D', '', bid_el.text))
+                    # BIDS
+                    bid_count = 0
+                    match = re.search(r'(\d+)\s+Bid', card.text)
+                    if match:
+                        bid_count = int(match.group(1))
+
+                    # TIME
+                    time_match = re.search(r'(\d+[dhm].*)', card.text)
+                    time_left = time_match.group(0) if time_match else "Unknown"
+                    minutes_left = parse_time_to_minutes(time_left)
+
+                    status = "pending" if minutes_left > 0 else "ended"
+
+                    # IMAGE
+                    img_url = ""
+                    try:
+                        img_url = card.find_element(By.TAG_NAME, "img").get_attribute("src")
+                    except:
+                        pass
+
+                    cursor.execute("""
+                        INSERT INTO lots (
+                            lot_id, title, current_bid, bid_count,
+                            time_remaining, minutes_left,
+                            url, image_url, status
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(lot_id) DO UPDATE SET
+                            current_bid=excluded.current_bid,
+                            bid_count=excluded.bid_count,
+                            time_remaining=excluded.time_remaining,
+                            minutes_left=excluded.minutes_left,
+                            status=excluded.status,
+                            last_seen=CURRENT_TIMESTAMP
+                    """, (
+                        lot_id, title, price, bid_count,
+                        time_left, minutes_left,
+                        link, img_url, status
+                    ))
+
                 except:
-                    pass
+                    continue
 
-                # --- TIME REMAINING ---
-                time_left = "Unknown"
-                match = re.search(r'(\d+[dhms]\s*)+', card.text)
-                if match:
-                    time_left = match.group(0).strip()
+            conn.commit()
+            conn.close()
 
-                minutes_left = parse_time_to_minutes(time_left)
-                if minutes_left <= 0 or time_left == "Unknown":
-                    status = "ended"
-                else:
-                    status = "pending"
+            try:
+                next_btn = driver.find_element(By.XPATH, "//a[contains(@class,'page-link') and contains(.,'Next')]")
+                driver.execute_script("arguments[0].click();", next_btn)
+                time.sleep(3)
+            except:
+                break
 
-                # --- IMAGE ---
-                img_url = ""
-                try:
-                    img_url = card.find_element(By.TAG_NAME, "img").get_attribute("src")
-                except:
-                    pass
+    # FINAL PRICE CHECK
+    print("Checking ended lots...")
 
-                cursor.execute("""
-                    INSERT INTO lots (
-                        lot_id, title, current_bid, bid_count,
-                        time_remaining, minutes_left, url, image_url, status
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(lot_id) DO UPDATE SET
-                        current_bid=excluded.current_bid,
-                        bid_count=excluded.bid_count,
-                        time_remaining=excluded.time_remaining,
-                        minutes_left=excluded.minutes_left,
-                        status=excluded.status,
-                        last_seen=CURRENT_TIMESTAMP
-                """, (
-                    lot_id,
-                    title,
-                    price,
-                    bid_count,
-                    time_left,
-                    minutes_left,
-                    link,
-                    img_url,
-                    status
-                ))
-
-                total_saved += 1
-
-            except Exception:
-                continue
-
-        conn.commit()
-        conn.close()
-
-        print(f"Saved/Updated: {total_saved}")
-
-        try:
-            next_btn = WebDriverWait(driver, 5).until(
-                EC.element_to_be_clickable(
-                    (By.XPATH, "//a[contains(@class, 'page-link') and .//span[contains(text(), 'Next')]]")
-                )
-            )
-            driver.execute_script("arguments[0].click();", next_btn)
-            current_page += 1
-            time.sleep(4)
-        except:
-            print("No more pages.")
-            break
-
-    print("Checking ended lots for final prices...")
-
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    
+
     cursor.execute("""
         SELECT lot_id, url
         FROM lots
@@ -246,40 +204,21 @@ def run_scraper():
         AND ended_checked=0
         LIMIT 20
     """)
-    
-    ended_lots = cursor.fetchall()
-    
-    for lot_id, url in ended_lots:
+
+    for lot_id, url in cursor.fetchall():
         final_price = scrape_final_price(driver, url)
-    
-        if final_price is not None:
-            cursor.execute("""
-                UPDATE lots
-                SET final_price=?,
-                    status='sold_history',
-                    minutes_left=0,
-                    ended_checked=1
-                WHERE lot_id=?
-            """, (final_price, lot_id))
-        else:
-            cursor.execute("""
-                UPDATE lots
-                SET ended_checked=1
-                WHERE lot_id=?
-            """, (lot_id,))
-    
+
+        cursor.execute("""
+            UPDATE lots
+            SET final_price=?,
+                status='sold_history',
+                minutes_left=0,
+                ended_checked=1
+            WHERE lot_id=?
+        """, (final_price, lot_id))
+
     conn.commit()
     conn.close()
 
-
     driver.quit()
     print("Scrape complete.")
-
-
-import lifecycle_manager
-
-if __name__ == "__main__":
-    run_scraper()
-    lifecycle_manager.run_lifecycle()
-    except KeyboardInterrupt:
-        print("Scraper manually stopped.")
