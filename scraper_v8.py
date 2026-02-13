@@ -11,7 +11,7 @@ from selenium.webdriver.support import expected_conditions as EC
 
 # --- CONFIGURATION ---
 DB_NAME = "hibid_lots.db"
-ZIP_CODE = "62629"
+ZIP_CODE = ["62629","46173"]
 RADIUS = 50
 MAX_PAGES = 10
 
