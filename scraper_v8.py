@@ -144,6 +144,24 @@ def run_scraper():
                 if match:
                     time_left = match.group(0).strip()
 
+    def parse_time_to_minutes(time_str):
+        if not isinstance(time_str, str):
+            return 999999
+
+        total = 0
+        d = re.search(r'(\d+)d', time_str)
+        h = re.search(r'(\d+)h', time_str)
+        m = re.search(r'(\d+)m', time_str)
+
+        if d: total += int(d.group(1)) * 1440
+        if h: total += int(h.group(1)) * 60
+        if m: total += int(m.group(1))
+
+        return total if total > 0 else 999999
+
+    minutes_left = parse_time_to_minutes(time_left)
+
+
                 # --- IMAGE ---
                 img_url = ""
                 try:
@@ -152,15 +170,20 @@ def run_scraper():
                     pass
 
                 cursor.execute("""
-                    INSERT INTO lots (lot_id, title, current_bid, bid_count,
-                                      time_remaining, url, image_url, status)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')
+                    INSERT INTO lots (
+                        lot_id, title, current_bid, bid_count,
+                        time_remaining, minutes_left, url, image_url, status
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')
                     ON CONFLICT(lot_id) DO UPDATE SET
                         current_bid=excluded.current_bid,
                         bid_count=excluded.bid_count,
                         time_remaining=excluded.time_remaining,
+                        minutes_left=excluded.minutes_left,
                         last_seen=CURRENT_TIMESTAMP
-                """, (lot_id, title, price, bid_count, time_left, link, img_url))
+                """, (lot_id, title, price, bid_count,
+                      time_left, minutes_left, link, img_url))
+
 
                 total_saved += 1
 
