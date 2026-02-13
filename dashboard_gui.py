@@ -102,6 +102,8 @@ with tab1:
 
     if df.empty:
         st.info("No active items.")
+
+        df['minutes_left'] = df['minutes_left'].fillna(999999)
     else:
 
         # ------------- FILTERS -------------
@@ -173,7 +175,7 @@ with tab1:
                         st.metric("Deal Score", f"{row['deal_score']:.1f}%")
 
                 with c3:
-                    if row['minutes_left'] <= 60:
+                    if row['minutes_left'] is not None and row['minutes_left'] <= 60:
                         st.error(f"⏳ {row['time_remaining']}")
                     else:
                         st.caption(f"⏳ {row['time_remaining']}")
