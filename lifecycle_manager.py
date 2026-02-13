@@ -1,5 +1,5 @@
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 
 DB = "hibid_lots.db"
 
@@ -7,29 +7,33 @@ def run_lifecycle():
     conn = sqlite3.connect(DB)
     cursor = conn.cursor()
 
-    # Move pending -> ended
+    now = datetime.utcnow()
+    stale_cutoff = now - timedelta(hours=2)
+
+    # 1️⃣ Move pending -> ended if minutes_left <= 0
     cursor.execute("""
-        SELECT lot_id
-        FROM lots
+        UPDATE lots
+        SET status='ended',
+            ended_at=?
         WHERE status='pending'
         AND minutes_left IS NOT NULL
         AND minutes_left <= 0
-    """)
+    """, (now,))
+    
+    moved_time = cursor.rowcount
 
-    ended_lots = cursor.fetchall()
-
-    for (lot_id,) in ended_lots:
-        cursor.execute("""
-            UPDATE lots
-            SET status='ended',
-                ended_at=?
-            WHERE lot_id=?
-        """, (datetime.utcnow(), lot_id))
+    # 2️⃣ Failsafe: stale lots not seen in 2 hours
+    cursor.execute("""
+        UPDATE lots
+        SET status='ended',
+            ended_at=?
+        WHERE status='pending'
+        AND last_seen < ?
+    """, (now, stale_cutoff))
+    
+    moved_stale = cursor.rowcount
 
     conn.commit()
     conn.close()
 
-    print(f"Moved {len(ended_lots)} lots to ended.")
-
-if __name__ == "__main__":
-    run_lifecycle()
+    print(f"Moved {moved_time} expired + {moved_stale} stale lots to ended.")
