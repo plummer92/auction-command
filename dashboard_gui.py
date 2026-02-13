@@ -1,5 +1,5 @@
 # ============================================================
-# AUCTION COMMAND DASHBOARD – INTELLIGENCE BUILD
+# AUCTION COMMAND – HYBRID INTELLIGENCE DASHBOARD
 # ============================================================
 
 import os
@@ -28,27 +28,189 @@ def get_db():
     return conn
 
 def run_query(query, params=()):
-    try:
-        conn = get_db()
-        df = pd.read_sql_query(query, conn, params=params)
-        conn.close()
-        return df
-    except Exception as e:
-        st.error(f"Database Error: {e}")
-        return pd.DataFrame()
-
-def execute_command(command, params=()):
     conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute(command, params)
-    conn.commit()
+    df = pd.read_sql_query(query, conn, params=params)
     conn.close()
+    return df
 
-# ===================== MARKET DATA ======================
+# ===================== DEAL ENGINE ======================
+
+@st.cache_data(ttl=60)
+def load_historical_data():
+    return run_query("""
+        SELECT final_price
+        FROM lots
+        WHERE status='sold_history'
+        AND final_price IS NOT NULL
+    """)
+
+def assign_bucket(price):
+    if price <= 25:
+        return "low"
+    elif price <= 100:
+        return "mid"
+    elif price <= 500:
+        return "high"
+    else:
+        return "premium"
+
+historical_df = load_historical_data()
+
+if not historical_df.empty:
+    historical_df["bucket"] = historical_df["final_price"].apply(assign_bucket)
+    bucket_medians = (
+        historical_df.groupby("bucket")["final_price"]
+        .median()
+        .to_dict()
+    )
+else:
+    bucket_medians = {}
+
+def compute_deal_score(row):
+    if not row["current_bid"]:
+        return 0
+
+    adjusted_current = row["current_bid"] * 1.15
+    bucket = assign_bucket(adjusted_current)
+
+    expected = bucket_medians.get(bucket, 0)
+    if expected == 0:
+        return 0
+
+    ratio = expected / adjusted_current
+    score = (ratio - 1) * 100
+
+    return max(0, min(100, score))
+
+# ===================== HEADER ======================
+
+st.title("🛡️ Auction Command – Hybrid Intelligence")
+
+metrics_df = run_query("""
+    SELECT COUNT(*) as total,
+           SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) as active,
+           SUM(CASE WHEN status='sold_history' THEN 1 ELSE 0 END) as sold
+    FROM lots
+""")
+
+if not metrics_df.empty:
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Total Lots", int(metrics_df['total'].iloc[0] or 0))
+    col2.metric("Active Lots", int(metrics_df['active'].iloc[0] or 0))
+    col3.metric("Historical Sold", int(metrics_df['sold'].iloc[0] or 0))
+
+st.divider()
+
+# ===================== TABS ======================
+
+tab1, tab2, tab3 = st.tabs(
+    ["🎯 Active Hunt", "🏛️ Sold Archive", "📈 Metals"]
+)
+
+# ============================================================
+# TAB 1 – ACTIVE HUNT
+# ============================================================
+
+with tab1:
+
+    df = run_query("""
+        SELECT *
+        FROM lots
+        WHERE status='pending'
+        AND minutes_left > 0
+        ORDER BY minutes_left ASC
+        LIMIT 200
+    """)
+
+    if df.empty:
+        st.info("No active auctions.")
+    else:
+
+        df["minutes_left"] = df["minutes_left"].fillna(999999)
+        df["deal_score"] = df.apply(compute_deal_score, axis=1)
+
+        # -------- Filters --------
+
+        col1, col2, col3 = st.columns([2,1,1])
+
+        with col1:
+            search = st.text_input("Search")
+
+        with col2:
+            ending_soon = st.checkbox("🔥 < 60 min")
+
+        with col3:
+            sort_by = st.selectbox(
+                "Sort",
+                ["Ending Soonest", "Best Deal", "Lowest Bid"]
+            )
+
+        if search:
+            df = df[df["title"].str.contains(search, case=False, na=False)]
+
+        if ending_soon:
+            df = df[df["minutes_left"] <= 60]
+
+        if sort_by == "Ending Soonest":
+            df = df.sort_values("minutes_left")
+        elif sort_by == "Best Deal":
+            df = df.sort_values("deal_score", ascending=False)
+        elif sort_by == "Lowest Bid":
+            df = df.sort_values("current_bid")
+
+        st.caption(f"Showing {len(df)} active lots")
+
+        show_images = st.checkbox("Show Images", value=True)
+
+        for _, row in df.iterrows():
+            with st.container(border=True):
+
+                c1, c2, c3 = st.columns([4,2,2])
+
+                with c1:
+                    st.subheader(row["title"])
+                    st.caption(f"Deal Score: {row['deal_score']:.1f}")
+
+                with c2:
+                    st.write(f"Bid: ${row['current_bid']:,.2f}")
+                    st.write(f"Time: {row['time_remaining']}")
+
+                with c3:
+                    if row["deal_score"] > 50:
+                        st.success("🔥 Strong Deal")
+                    elif row["deal_score"] > 20:
+                        st.warning("⚠️ Moderate")
+                    else:
+                        st.caption("Low Edge")
+
+                if show_images and row["image_url"]:
+                    st.image(row["image_url"], width=180)
+
+                st.link_button("View Lot", row["url"])
+
+# ============================================================
+# TAB 2 – SOLD ARCHIVE
+# ============================================================
+
+with tab2:
+
+    df_sold = run_query("""
+        SELECT title, final_price, bid_count, last_seen
+        FROM lots
+        WHERE status='sold_history'
+        ORDER BY final_price DESC
+        LIMIT 200
+    """)
+
+    st.dataframe(df_sold)
+
+# ============================================================
+# TAB 3 – METALS
+# ============================================================
 
 @st.cache_data(ttl=300)
 def get_live_metals():
-    gold, silver = 2650.00, 32.50
+    gold, silver = 0, 0
     try:
         g = yf.Ticker("GC=F").history(period="1d")
         s = yf.Ticker("SI=F").history(period="1d")
@@ -60,183 +222,9 @@ def get_live_metals():
         pass
     return gold, silver
 
-# ===================== HEADER ======================
-
-st.title("🛡️ Auction Command Intelligence")
-
-metrics_df = run_query("""
-    SELECT COUNT(*) as total,
-           AVG(current_bid) as avg_bid,
-           MAX(last_seen) as last_scrape
-    FROM lots
-""")
-
-if not metrics_df.empty:
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Total Lots", int(metrics_df['total'].iloc[0] or 0))
-    col2.metric("Average Bid", f"${(metrics_df['avg_bid'].iloc[0] or 0):,.2f}")
-    col3.metric("Last Scrape", metrics_df['last_scrape'].iloc[0] or "N/A")
-
-st.divider()
-
-# ===================== TABS ======================
-
-tab1, tab2, tab3, tab4, tab5 = st.tabs(
-    ["🎯 Active Hunt", "📦 Inventory", "🗄️ Graveyard", "🏛️ Archives", "📈 Metals"]
-)
-
-# ============================================================
-# TAB 1 — ACTIVE HUNT
-# ============================================================
-
-with tab1:
-
-    df = run_query("""
-        SELECT *,
-        (market_value - (current_bid * 1.15) - 15) as potential_profit
-        FROM lots
-        WHERE status='pending'
-        ORDER BY minutes_left ASC
-        LIMIT 200
-    """)
-
-    if df.empty:
-        st.info("No active items.")
-
-        df['minutes_left'] = df['minutes_left'].fillna(999999)
-    else:
-
-        # ------------- FILTERS -------------
-
-        col1, col2, col3, col4 = st.columns([2,1,1,1])
-
-        with col1:
-            search = st.text_input("Search Title")
-
-        with col2:
-            min_profit = st.number_input("Min Profit", value=0)
-
-        with col3:
-            ending_soon = st.checkbox("🔥 < 60 min")
-
-        with col4:
-            sort_by = st.selectbox(
-                "Sort",
-                ["Ending Soonest", "Highest Profit", "Lowest Bid", "Highest Value"]
-            )
-
-        if search:
-            df = df[df['title'].str.contains(search, case=False, na=False)]
-
-        df['potential_profit'] = df['potential_profit'].fillna(-9999)
-
-        if min_profit > 0:
-            df = df[df['potential_profit'] >= min_profit]
-
-        if ending_soon:
-            df = df[df['minutes_left'] <= 60]
-
-        # ------------- SORTING -------------
-
-        if sort_by == "Ending Soonest":
-            df = df.sort_values("minutes_left")
-        elif sort_by == "Highest Profit":
-            df = df.sort_values("potential_profit", ascending=False)
-        elif sort_by == "Lowest Bid":
-            df = df.sort_values("current_bid")
-        elif sort_by == "Highest Value":
-            df = df.sort_values("market_value", ascending=False)
-
-        st.caption(f"Showing {len(df)} items")
-
-        # ------------- DISPLAY -------------
-
-        for _, row in df.iterrows():
-            with st.container(border=True):
-
-                c1, c2, c3 = st.columns([4,2,2])
-
-                with c1:
-                    st.subheader(f"${row['potential_profit']:.0f} Profit")
-                    st.write(row['title'])
-
-                    if row.get("predicted_category"):
-                        st.caption(
-                            f"Category: {row['predicted_category']} "
-                            f"(Confidence: {round((row['confidence'] or 0)*100)}%)"
-                        )
-
-                with c2:
-                    bid_display = f"${row['current_bid']:,.0f}" if row['current_bid'] else "N/A"
-                    value_display = f"${row['market_value']:,.0f}" if row['market_value'] else "N/A"
-                    st.write(f"{bid_display} / {value_display}")
-
-                    if row.get("deal_score"):
-                        st.metric("Deal Score", f"{row['deal_score']:.1f}%")
-
-                with c3:
-                    if row['minutes_left'] is not None and row['minutes_left'] <= 60:
-                        st.error(f"⏳ {row['time_remaining']}")
-                    else:
-                        st.caption(f"⏳ {row['time_remaining']}")
-
-                c4, c5 = st.columns([2,2])
-
-                with c4:
-                    if row['image_url']:
-                        st.image(row['image_url'], width=150)
-
-                with c5:
-                    st.link_button("View on HiBid", row['url'])
-                    if row.get("ref_url"):
-                        st.link_button("eBay Source", row['ref_url'])
-
-# ============================================================
-# TAB 2 — INVENTORY
-# ============================================================
-
-with tab2:
-    df_won = run_query("SELECT * FROM lots WHERE status='won'")
-    if df_won.empty:
-        st.info("Inventory empty.")
-    else:
-        st.metric("Total Inventory Value", f"${df_won['market_value'].sum():,.2f}")
-        st.dataframe(df_won)
-
-# ============================================================
-# TAB 3 — GRAVEYARD
-# ============================================================
-
 with tab3:
-    if st.button("Empty Trash"):
-        execute_command("DELETE FROM lots WHERE status='archived'")
-        st.rerun()
-
-    df_arch = run_query("SELECT * FROM lots WHERE status='archived' LIMIT 50")
-    st.dataframe(df_arch)
-
-# ============================================================
-# TAB 4 — ARCHIVES
-# ============================================================
-
-with tab4:
-    df_sold = run_query("""
-        SELECT title, final_price, location, last_seen
-        FROM lots
-        WHERE status='sold_history'
-        ORDER BY final_price DESC
-        LIMIT 50
-    """)
-    st.dataframe(df_sold)
-
-# ============================================================
-# TAB 5 — METALS
-# ============================================================
-
-with tab5:
-    st.header("Live Metals Market")
     gold, silver = get_live_metals()
     col1, col2 = st.columns(2)
-    col1.metric("Gold (GC=F)", f"${gold:,.2f}")
-    col2.metric("Silver (SI=F)", f"${silver:,.2f}")
-    st.caption(f"Last Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    col1.metric("Gold", f"${gold:,.2f}")
+    col2.metric("Silver", f"${silver:,.2f}")
+    st.caption(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
