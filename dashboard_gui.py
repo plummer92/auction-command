@@ -93,9 +93,11 @@ with tab1:
 
     df = run_query("""
         SELECT *,
-               (market_value - (current_bid * 1.15) - 15) as potential_profit
+        (market_value - (current_bid * 1.15) - 15) as potential_profit
         FROM lots
         WHERE status='pending'
+        ORDER BY minutes_left ASC
+        LIMIT 200
     """)
 
     if df.empty:
