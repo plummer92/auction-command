@@ -7,6 +7,7 @@ import streamlit as st
 import sqlite3
 import pandas as pd
 import yfinance as yf
+import plotly.express as px
 from datetime import datetime
 
 # ===================== CONFIG ======================
@@ -32,6 +33,25 @@ def run_query(query, params=()):
     df = pd.read_sql_query(query, conn, params=params)
     conn.close()
     return df
+
+    df = pd.read_sql_query("""
+    SELECT edge_score, minutes_left, velocity
+    FROM lots
+    WHERE status='pending'
+    AND edge_score IS NOT NULL
+    LIMIT 500
+    """, conn)
+    
+    fig = px.scatter(
+        df,
+        x="minutes_left",
+        y="velocity",
+        color="edge_score",
+        color_continuous_scale="Turbo",
+        title="Edge Heatmap"
+    )
+    
+    st.plotly_chart(fig, use_container_width=True)
 
 # ===================== DEAL ENGINE ======================
 
