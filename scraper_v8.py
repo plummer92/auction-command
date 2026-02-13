@@ -219,4 +219,7 @@ def run_scraper():
 
 
 if __name__ == "__main__":
-    run_scraper()
+    try:
+        run_scraper()
+    except KeyboardInterrupt:
+        print("Scraper manually stopped.")
