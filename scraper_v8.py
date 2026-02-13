@@ -19,6 +19,24 @@ CHROMIUM_PATH = "/usr/bin/chromium"
 CHROMEDRIVER_PATH = "/usr/bin/chromedriver"
 
 
+# -------------------- TIME PARSER -------------------- #
+
+def parse_time_to_minutes(time_str):
+    if not isinstance(time_str, str):
+        return 999999
+
+    total = 0
+    d = re.search(r'(\d+)d', time_str)
+    h = re.search(r'(\d+)h', time_str)
+    m = re.search(r'(\d+)m', time_str)
+
+    if d: total += int(d.group(1)) * 1440
+    if h: total += int(h.group(1)) * 60
+    if m: total += int(m.group(1))
+
+    return total if total > 0 else 999999
+
+
 # -------------------- DATABASE SETUP -------------------- #
 
 def setup_db():
@@ -33,6 +51,7 @@ def setup_db():
             current_bid REAL,
             bid_count INTEGER,
             time_remaining TEXT,
+            minutes_left INTEGER,
             url TEXT,
             image_url TEXT,
             market_value REAL,
@@ -57,13 +76,11 @@ def get_driver():
     chrome_options = Options()
     chrome_options.binary_location = CHROMIUM_PATH
 
-    # Cloud-safe headless config
     chrome_options.add_argument("--headless=new")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--window-size=1920,1080")
-    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
 
     service = Service(CHROMEDRIVER_PATH)
     driver = webdriver.Chrome(service=service, options=chrome_options)
@@ -91,8 +108,6 @@ def run_scraper():
         print(f"\n[PAGE {current_page}]")
 
         time.sleep(3)
-
-        # Scroll to trigger lazy loading
         driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
         time.sleep(2)
 
@@ -144,23 +159,7 @@ def run_scraper():
                 if match:
                     time_left = match.group(0).strip()
 
-    def parse_time_to_minutes(time_str):
-        if not isinstance(time_str, str):
-            return 999999
-
-        total = 0
-        d = re.search(r'(\d+)d', time_str)
-        h = re.search(r'(\d+)h', time_str)
-        m = re.search(r'(\d+)m', time_str)
-
-        if d: total += int(d.group(1)) * 1440
-        if h: total += int(h.group(1)) * 60
-        if m: total += int(m.group(1))
-
-        return total if total > 0 else 999999
-
-    minutes_left = parse_time_to_minutes(time_left)
-
+                minutes_left = parse_time_to_minutes(time_left)
 
                 # --- IMAGE ---
                 img_url = ""
@@ -181,9 +180,16 @@ def run_scraper():
                         time_remaining=excluded.time_remaining,
                         minutes_left=excluded.minutes_left,
                         last_seen=CURRENT_TIMESTAMP
-                """, (lot_id, title, price, bid_count,
-                      time_left, minutes_left, link, img_url))
-
+                """, (
+                    lot_id,
+                    title,
+                    price,
+                    bid_count,
+                    time_left,
+                    minutes_left,
+                    link,
+                    img_url
+                ))
 
                 total_saved += 1
 
@@ -195,7 +201,6 @@ def run_scraper():
 
         print(f"Saved/Updated: {total_saved}")
 
-        # --- NEXT PAGE ---
         try:
             next_btn = WebDriverWait(driver, 5).until(
                 EC.element_to_be_clickable(
