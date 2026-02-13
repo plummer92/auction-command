@@ -1,18 +1,15 @@
 # ============================================================
-# AUCTION COMMAND DASHBOARD V22.0
+# AUCTION COMMAND DASHBOARD – INTELLIGENCE BUILD
 # ============================================================
-
-# ===================== IMPORTS ==============================
 
 import os
 import streamlit as st
 import sqlite3
 import pandas as pd
-import re
 import yfinance as yf
 from datetime import datetime
 
-# ===================== CONFIGURATION ========================
+# ===================== CONFIG ======================
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "hibid_lots.db")
@@ -20,10 +17,10 @@ DB_PATH = os.path.join(BASE_DIR, "hibid_lots.db")
 st.set_page_config(
     page_title="Auction Command",
     layout="wide",
-    page_icon="⏳"
+    page_icon="🛡️"
 )
 
-# ===================== DATABASE LAYER =======================
+# ===================== DATABASE ======================
 
 def get_db():
     conn = sqlite3.connect(DB_PATH, timeout=30)
@@ -41,59 +38,38 @@ def run_query(query, params=()):
         return pd.DataFrame()
 
 def execute_command(command, params=()):
-    try:
-        conn = get_db()
-        cursor = conn.cursor()
-        cursor.execute(command, params)
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        st.error(f"Database Error: {e}")
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute(command, params)
+    conn.commit()
+    conn.close()
 
-# ===================== TIME PARSER ==========================
-
-def parse_time_to_minutes(time_str):
-    if not isinstance(time_str, str):
-        return 999999
-    if "Closed" in time_str or "Unknown" in time_str:
-        return 999999
-
-    total_min = 0
-    d = re.search(r'(\d+)d', time_str)
-    h = re.search(r'(\d+)h', time_str)
-    m = re.search(r'(\d+)m', time_str)
-
-    if d: total_min += int(d.group(1)) * 1440
-    if h: total_min += int(h.group(1)) * 60
-    if m: total_min += int(m.group(1))
-
-    return total_min if total_min > 0 else 999999
-
-# ===================== MARKET DATA ==========================
+# ===================== MARKET DATA ======================
 
 @st.cache_data(ttl=300)
 def get_live_metals():
     gold, silver = 2650.00, 32.50
     try:
         g = yf.Ticker("GC=F").history(period="1d")
+        s = yf.Ticker("SI=F").history(period="1d")
         if not g.empty:
             gold = g['Close'].iloc[-1]
-
-        s = yf.Ticker("SI=F").history(period="1d")
         if not s.empty:
             silver = s['Close'].iloc[-1]
-
-        return gold, silver
     except:
-        return gold, silver
+        pass
+    return gold, silver
 
-# ===================== HEADER ===============================
+# ===================== HEADER ======================
 
-st.title("🛡️ Auction Command")
+st.title("🛡️ Auction Command Intelligence")
 
-# ===================== SYSTEM METRICS =======================
-
-metrics_df = run_query("SELECT COUNT(*) as total, AVG(current_bid) as avg_bid, MAX(last_seen) as last_scrape FROM lots")
+metrics_df = run_query("""
+    SELECT COUNT(*) as total,
+           AVG(current_bid) as avg_bid,
+           MAX(last_seen) as last_scrape
+    FROM lots
+""")
 
 if not metrics_df.empty:
     col1, col2, col3 = st.columns(3)
@@ -103,12 +79,11 @@ if not metrics_df.empty:
 
 st.divider()
 
-# ===================== TABS ================================
+# ===================== TABS ======================
 
 tab1, tab2, tab3, tab4, tab5 = st.tabs(
     ["🎯 Active Hunt", "📦 Inventory", "🗄️ Graveyard", "🏛️ Archives", "📈 Metals"]
 )
-
 
 # ============================================================
 # TAB 1 — ACTIVE HUNT
@@ -118,7 +93,7 @@ with tab1:
 
     df = run_query("""
         SELECT *,
-        (market_value - (current_bid * 1.15) - 15) as potential_profit
+               (market_value - (current_bid * 1.15) - 15) as potential_profit
         FROM lots
         WHERE status='pending'
     """)
@@ -127,18 +102,20 @@ with tab1:
         st.info("No active items.")
     else:
 
-        # ---------------- FILTERS ----------------
+        # ------------- FILTERS -------------
 
-        col1, col2, col3 = st.columns([2,1,1])
+        col1, col2, col3, col4 = st.columns([2,1,1,1])
 
         with col1:
-            search = st.text_input("Search")
+            search = st.text_input("Search Title")
 
         with col2:
             min_profit = st.number_input("Min Profit", value=0)
 
-
         with col3:
+            ending_soon = st.checkbox("🔥 < 60 min")
+
+        with col4:
             sort_by = st.selectbox(
                 "Sort",
                 ["Ending Soonest", "Highest Profit", "Lowest Bid", "Highest Value"]
@@ -152,8 +129,10 @@ with tab1:
         if min_profit > 0:
             df = df[df['potential_profit'] >= min_profit]
 
+        if ending_soon:
+            df = df[df['minutes_left'] <= 60]
 
-        df['minutes_left'] = df['time_remaining'].apply(parse_time_to_minutes)
+        # ------------- SORTING -------------
 
         if sort_by == "Ending Soonest":
             df = df.sort_values("minutes_left")
@@ -166,7 +145,7 @@ with tab1:
 
         st.caption(f"Showing {len(df)} items")
 
-        # ---------------- DISPLAY ----------------
+        # ------------- DISPLAY -------------
 
         for _, row in df.iterrows():
             with st.container(border=True):
@@ -177,20 +156,22 @@ with tab1:
                     st.subheader(f"${row['potential_profit']:.0f} Profit")
                     st.write(row['title'])
 
+                    if row.get("predicted_category"):
+                        st.caption(
+                            f"Category: {row['predicted_category']} "
+                            f"(Confidence: {round((row['confidence'] or 0)*100)}%)"
+                        )
+
                 with c2:
-                    st.caption("Bid / eBay Avg")
-                    current_bid = row['current_bid']
-                    market_value = row['market_value']
-
-                    bid_display = f"${current_bid:,.0f}" if current_bid else "N/A"
-                    value_display = f"${market_value:,.0f}" if market_value else "N/A"
-
+                    bid_display = f"${row['current_bid']:,.0f}" if row['current_bid'] else "N/A"
+                    value_display = f"${row['market_value']:,.0f}" if row['market_value'] else "N/A"
                     st.write(f"{bid_display} / {value_display}")
 
-
+                    if row.get("deal_score"):
+                        st.metric("Deal Score", f"{row['deal_score']:.1f}%")
 
                 with c3:
-                    if row['minutes_left'] < 60:
+                    if row['minutes_left'] <= 60:
                         st.error(f"⏳ {row['time_remaining']}")
                     else:
                         st.caption(f"⏳ {row['time_remaining']}")
@@ -203,7 +184,7 @@ with tab1:
 
                 with c5:
                     st.link_button("View on HiBid", row['url'])
-                    if row['ref_url']:
+                    if row.get("ref_url"):
                         st.link_button("eBay Source", row['ref_url'])
 
 # ============================================================
@@ -212,7 +193,6 @@ with tab1:
 
 with tab2:
     df_won = run_query("SELECT * FROM lots WHERE status='won'")
-
     if df_won.empty:
         st.info("Inventory empty.")
     else:
@@ -250,15 +230,9 @@ with tab4:
 # ============================================================
 
 with tab5:
-
     st.header("Live Metals Market")
-
     gold, silver = get_live_metals()
-
     col1, col2 = st.columns(2)
-
     col1.metric("Gold (GC=F)", f"${gold:,.2f}")
     col2.metric("Silver (SI=F)", f"${silver:,.2f}")
-
     st.caption(f"Last Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-
