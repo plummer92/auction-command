@@ -90,6 +90,20 @@ def get_driver():
 
 
 # -------------------- SCRAPER -------------------- #
+def scrape_final_price(driver, url):
+    try:
+        driver.get(url)
+        time.sleep(2)
+        page_text = driver.page_source
+
+        match = re.search(r'Price Realized:\s*([\d\.]+)', page_text)
+        if match:
+            return float(match.group(1))
+    except:
+        pass
+    return None
+
+
 
 def run_scraper():
     print("=== AUCTION SCRAPER (CLOUD MODE) ===")
@@ -160,6 +174,10 @@ def run_scraper():
                     time_left = match.group(0).strip()
 
                 minutes_left = parse_time_to_minutes(time_left)
+                if minutes_left <= 0 or time_left == "Unknown":
+                    status = "ended"
+                else:
+                    status = "pending"
 
                 # --- IMAGE ---
                 img_url = ""
@@ -173,12 +191,13 @@ def run_scraper():
                         lot_id, title, current_bid, bid_count,
                         time_remaining, minutes_left, url, image_url, status
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(lot_id) DO UPDATE SET
                         current_bid=excluded.current_bid,
                         bid_count=excluded.bid_count,
                         time_remaining=excluded.time_remaining,
                         minutes_left=excluded.minutes_left,
+                        status=excluded.status,
                         last_seen=CURRENT_TIMESTAMP
                 """, (
                     lot_id,
@@ -188,7 +207,8 @@ def run_scraper():
                     time_left,
                     minutes_left,
                     link,
-                    img_url
+                    img_url,
+                    status
                 ))
 
                 total_saved += 1
@@ -213,6 +233,44 @@ def run_scraper():
         except:
             print("No more pages.")
             break
+
+    print("Checking ended lots for final prices...")
+
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        SELECT lot_id, url
+        FROM lots
+        WHERE status='ended'
+        AND ended_checked=0
+        LIMIT 20
+    """)
+    
+    ended_lots = cursor.fetchall()
+    
+    for lot_id, url in ended_lots:
+        final_price = scrape_final_price(driver, url)
+    
+        if final_price is not None:
+            cursor.execute("""
+                UPDATE lots
+                SET final_price=?,
+                    status='sold_history',
+                    minutes_left=0,
+                    ended_checked=1
+                WHERE lot_id=?
+            """, (final_price, lot_id))
+        else:
+            cursor.execute("""
+                UPDATE lots
+                SET ended_checked=1
+                WHERE lot_id=?
+            """, (lot_id,))
+    
+    conn.commit()
+    conn.close()
+
 
     driver.quit()
     print("Scrape complete.")
