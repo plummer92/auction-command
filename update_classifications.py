@@ -1,105 +1,155 @@
+import os
 import sqlite3
 import requests
 import torch
-import os
-from torchvision import transforms, models
+import torch.nn as nn
+from torchvision import models, transforms
 from PIL import Image
 from io import BytesIO
+import logging
+from datetime import datetime
 
-# =============================
+# -----------------------------
 # CONFIG
-# =============================
+# -----------------------------
 
-DB_PATH = "hibid_lots.db"
-MODEL_PATH = "models/tool_classifier.pth"
-TEMP_DIR = "temp_images"
+DB_PATH = "/home/theplummer92/auction-command/hibid_lots.db"
+MODEL_PATH = "/home/theplummer92/auction-command/models/tool_classifier.pth"
 BATCH_SIZE = 50
-
-DEVICE = torch.device("cpu")  # inference only
+TEMP_DIR = "/tmp/auction_images"
 
 CLASS_NAMES = [
-    "air_compressor",
     "drill_press",
-    "miter_saw",
-    "nail_gun",
     "table_saw",
-    "welder"
+    "miter_saw",
+    "welder",
+    "nail_gun",
+    "air_compressor"
 ]
 
-# =============================
-# MODEL LOAD
-# =============================
+# -----------------------------
+# LOGGING SETUP
+# -----------------------------
+
+logging.basicConfig(
+    filename="/home/theplummer92/auction-command/logs/inference.log",
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s"
+)
+
+os.makedirs(TEMP_DIR, exist_ok=True)
+
+# -----------------------------
+# LOAD MODEL (CPU MODE)
+# -----------------------------
+
+device = torch.device("cpu")
 
 model = models.resnet18(weights=None)
-model.fc = torch.nn.Linear(model.fc.in_features, len(CLASS_NAMES))
-model.load_state_dict(torch.load(MODEL_PATH, map_location=DEVICE))
+model.fc = nn.Linear(model.fc.in_features, len(CLASS_NAMES))
+model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
+model.to(device)
 model.eval()
+
+# Disable gradient tracking (important for CPU performance)
+torch.set_grad_enabled(False)
+
+# -----------------------------
+# IMAGE TRANSFORM
+# -----------------------------
 
 transform = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.ToTensor(),
+    transforms.Normalize(
+        mean=[0.485, 0.456, 0.406],
+        std=[0.229, 0.224, 0.225]
+    )
 ])
 
-if not os.path.exists(TEMP_DIR):
-    os.makedirs(TEMP_DIR)
+# -----------------------------
+# DB CONNECTION
+# -----------------------------
 
-# =============================
-# DB CONNECT
-# =============================
+def get_unclassified_lots(conn):
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT lot_id, image_url
+        FROM lots
+        WHERE predicted_category IS NULL
+        AND image_url IS NOT NULL
+        LIMIT ?
+    """, (BATCH_SIZE,))
+    return cursor.fetchall()
 
-conn = sqlite3.connect(DB_PATH)
-cursor = conn.cursor()
-
-cursor.execute("""
-SELECT lot_id, image_url
-FROM lots
-WHERE predicted_category IS NULL
-AND image_url IS NOT NULL
-LIMIT ?
-""", (BATCH_SIZE,))
-
-rows = cursor.fetchall()
-
-if not rows:
-    print("No unclassified lots found.")
-    conn.close()
-    exit()
-
-print(f"Processing {len(rows)} lots...")
-
-# =============================
-# PROCESS LOOP
-# =============================
-
-for lot_id, image_url in rows:
-
-    try:
-        response = requests.get(image_url, timeout=10)
-        img = Image.open(BytesIO(response.content)).convert("RGB")
-
-        input_tensor = transform(img).unsqueeze(0)
-
-        with torch.no_grad():
-            outputs = model(input_tensor)
-            probs = torch.softmax(outputs, dim=1)
-            confidence, predicted = torch.max(probs, 1)
-
-        category = CLASS_NAMES[predicted.item()]
-        confidence_score = float(confidence.item()) * 100
-
-        cursor.execute("""
+def update_lot(conn, lot_id, category, confidence):
+    cursor = conn.cursor()
+    cursor.execute("""
         UPDATE lots
         SET predicted_category = ?,
             classifier_confidence = ?
         WHERE lot_id = ?
-        """, (category, confidence_score, lot_id))
+    """, (category, confidence, lot_id))
+    conn.commit()
 
-        print(f"{lot_id} → {category} ({confidence_score:.2f}%)")
+# -----------------------------
+# IMAGE DOWNLOAD
+# -----------------------------
 
+def download_image(url):
+    try:
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        return Image.open(BytesIO(response.content)).convert("RGB")
     except Exception as e:
-        print(f"Error processing {lot_id}: {e}")
+        logging.error(f"Image download failed: {url} | {e}")
+        return None
 
-conn.commit()
-conn.close()
+# -----------------------------
+# INFERENCE
+# -----------------------------
 
-print("Classification update complete.")
+def classify_image(image):
+    input_tensor = transform(image).unsqueeze(0).to(device)
+    outputs = model(input_tensor)
+    probabilities = torch.softmax(outputs, dim=1)
+    confidence, predicted_idx = torch.max(probabilities, 1)
+    return CLASS_NAMES[predicted_idx.item()], confidence.item()
+
+# -----------------------------
+# MAIN LOOP
+# -----------------------------
+
+def main():
+    logging.info("Starting inference cycle")
+
+    conn = sqlite3.connect(DB_PATH)
+
+    while True:
+        lots = get_unclassified_lots(conn)
+
+        if not lots:
+            logging.info("No more unclassified lots. Exiting.")
+            break
+
+        for lot_id, image_url in lots:
+            try:
+                image = download_image(image_url)
+
+                if image is None:
+                    continue
+
+                category, confidence = classify_image(image)
+
+                update_lot(conn, lot_id, category, confidence)
+
+                logging.info(f"Lot {lot_id} classified as {category} ({confidence:.3f})")
+
+            except Exception as e:
+                logging.error(f"Failed processing lot {lot_id}: {e}")
+
+    conn.close()
+    logging.info("Inference cycle complete")
+
+if __name__ == "__main__":
+    main()
